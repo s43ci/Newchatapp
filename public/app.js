@@ -18,8 +18,6 @@
     packsLoaded: false,
     activePack: 0,
     online: false,
-    owner: null,
-    ownerName: 'AB',
   };
 
   // ---------------------------------------------------------------- utils
@@ -168,6 +166,7 @@
     clearTimeout(state.pollTimer);
   }
   let inflight = false;
+  let pollAgain = false;
   async function poll() {
     if (!state.polling || inflight) return;
     inflight = true;
@@ -183,8 +182,6 @@
         state.epoch = data.epoch;
       }
       state.epoch = data.epoch;
-      if (data.ownerName) state.ownerName = data.ownerName;
-      if ((data.owner || null) !== state.owner) { state.owner = data.owner || null; relabelOwner(); }
       applyEvents(data.events, data.reset);
       setOnline(data.online);
     } catch (e) {
@@ -193,7 +190,9 @@
       else banner('جاري الاتصال…');
     } finally {
       inflight = false;
-      if (state.polling) state.pollTimer = setTimeout(poll, POLL_MS);
+      clearTimeout(state.pollTimer);
+      if (state.polling) state.pollTimer = setTimeout(poll, pollAgain ? 0 : POLL_MS);
+      pollAgain = false;
     }
   }
   function banner(t) { const b = $('banner'); b.textContent = t; b.classList.remove('hidden'); }
@@ -205,8 +204,9 @@
   }
 
   // ---------------------------------------------------------------- events
+  let initialRender = true;
   function applyEvents(events, isReset) {
-    if (!events || !events.length) { if (isReset) { renderEmpty(); saveCache(); } return; }
+    if (!events || !events.length) { initialRender = false; if (isReset) { renderEmpty(); saveCache(); } return; }
     const nearBottom = isNearBottom();
     let added = 0;
     for (const ev of events) {
@@ -219,20 +219,23 @@
         state.pending.delete(ev.cid);
         p.node.replaceWith(renderRow(ev));
       } else {
-        appendRow(ev);
+        appendRow(ev, !isReset && !initialRender);
         added++;
       }
     }
     restyleGroups();
     renderEmpty();
     saveCache();
-    if (added && (nearBottom || isReset)) scrollToBottom(isReset);
+    const first = initialRender;
+    initialRender = false;
+    if (added && (nearBottom || isReset || first)) scrollToBottom(isReset || first);
     else if (added) $('toBottom').classList.remove('hidden');
   }
 
   function clearMessages() {
     state.msgs.clear();
     state.lastSeq = 0;
+    lastDay = null;
     $('msgs').innerHTML = '';
     for (const p of state.pending.values()) $('msgs').appendChild(p.node);
   }
@@ -257,51 +260,42 @@
 
   // ---------------------------------------------------------------- rendering
   const isOut = (m) => m.from && m.from.role === state.me.role;
-  // Messages from the owner's own Telegram account show as "AB" (covers ones received before the owner was known).
-  const isOwner = (m) => m.from.owner || (state.owner && m.from.uid && String(m.from.uid) === state.owner);
-  const senderName = (m) => (isOwner(m) ? state.ownerName : m.from.name);
-  function relabelOwner() {
-    for (const row of $('msgs').querySelectorAll('.row[data-seq]')) {
-      const m = state.msgs.get(Number(row.dataset.seq));
-      if (!m || m.from.role !== 'tg') continue;
-      const el = row.querySelector('.sender');
-      if (el) el.textContent = senderName(m);
-      row.dataset.sender = `tg:${senderName(m)}`;
-    }
-    restyleGroups();
-  }
+  // Telegram-app senders all show as "ادمن" (also relabels messages stored before this rule).
+  const senderName = (m) => (m.from.role === 'tg' ? 'ادمن' : m.from.name);
   const senderColor = (m) => (m.from.role === 'admin' ? '' : m.from.role === 'user' ? 'c2' : 'c3');
 
-  function appendRow(m) {
-    const list = $('msgs');
-    const lastRow = [...list.querySelectorAll('.row:not(.pending)')].pop();
-    const lastTs = lastRow ? Number(lastRow.dataset.ts) : 0;
-    if (!lastTs || dayKey(lastTs) !== dayKey(m.ts)) {
+  let lastDay = null;
+  function appendRow(m, animate) {
+    const day = dayKey(m.ts);
+    if (day !== lastDay) {
+      lastDay = day;
       const d = document.createElement('div');
       d.className = 'day';
-      d.dataset.day = dayKey(m.ts);
-      d.textContent = dayKey(m.ts) === dayKey(Date.now()) ? 'اليوم' : fmtDay.format(m.ts);
+      d.innerHTML = `<span>${day === dayKey(Date.now()) ? 'اليوم' : fmtDay.format(m.ts)}</span>`;
       insertBeforePending(d);
     }
-    insertBeforePending(renderRow(m));
-    restyleGroups();
+    const row = renderRow(m);
+    if (animate) row.classList.add('enter');
+    insertBeforePending(row);
   }
   function insertBeforePending(node) {
-    const firstPending = $('msgs').querySelector('.row.pending');
-    $('msgs').insertBefore(node, firstPending || null);
+    const first = state.pending.size ? $('msgs').querySelector('.row.pending') : null;
+    $('msgs').insertBefore(node, first);
   }
 
-  // Consecutive messages from the same sender are grouped (name shown once).
+  // Consecutive messages from the same sender form a group: name on the first,
+  // avatar and bubble tail on the last.
   function restyleGroups() {
-    let prevKey = null;
-    for (const el of $('msgs').children) {
-      if (!el.classList.contains('row')) { prevKey = null; continue; }
+    const kids = $('msgs').children;
+    for (let i = 0; i < kids.length; i++) {
+      const el = kids[i];
+      if (!el.classList.contains('row')) continue;
+      const prev = kids[i - 1], next = kids[i + 1];
       const key = el.dataset.sender;
-      const start = key !== prevKey;
-      el.classList.toggle('grp-start', start);
-      const name = el.querySelector('.sender');
-      if (name) name.classList.toggle('hidden', !start);
-      prevKey = key;
+      const start = !prev || !prev.classList.contains('row') || prev.dataset.sender !== key;
+      const end = !next || !next.classList.contains('row') || next.dataset.sender !== key;
+      if (el.classList.contains('grp-start') !== start) el.classList.toggle('grp-start', start);
+      if (el.classList.contains('grp-end') !== end) el.classList.toggle('grp-end', end);
     }
   }
 
@@ -314,7 +308,7 @@
     row.className = `row ${out ? 'out' : 'in'}${opts.pending ? ' pending' : ''}`;
     if (m.seq) row.dataset.seq = m.seq;
     row.dataset.ts = m.ts;
-    row.dataset.sender = m.from.role === 'tg' ? `tg:${senderName(m)}` : m.from.role;
+    row.dataset.sender = m.from.role;
 
     const b = document.createElement('div');
     b.className = 'bubble';
@@ -355,6 +349,12 @@
       p.className = 'upload-prog';
       p.textContent = '0%';
       b.appendChild(p);
+    }
+    if (!out) {
+      const av = document.createElement('div');
+      av.className = `av ${senderColor(m)}`;
+      av.textContent = senderName(m).trim().charAt(0);
+      row.appendChild(av);
     }
     row.appendChild(b);
     if (m.seq) attachLongPress(b, m);
@@ -543,6 +543,7 @@
     const cid = uid();
     const m = { type: 'msg', from: { role: state.me.role, name: state.me.name }, ts: Date.now(), bot: state.me.role === 'admin' ? 1 : 2, cid, ...data };
     const node = renderRow(m, { pending: true, ...opts });
+    node.classList.add('enter');
     $('msgs').appendChild(node);
     state.pending.set(cid, { node, data: m });
     renderEmpty();
@@ -577,14 +578,24 @@
       retry();
     }, { once: true });
   }
+  // The send succeeded. Don't render the server copy here: that would move lastSeq past
+  // messages others sent at the same moment. Mark the bubble as sent and let the next
+  // poll deliver everything in order (it swaps this bubble for the real one via cid).
   function settle(cid, ev) {
-    // the poll may have already delivered this message
-    if (state.msgs.has(ev.seq)) {
-      const p = state.pending.get(cid);
-      if (p) { p.node.remove(); state.pending.delete(cid); }
-      return;
-    }
-    applyEvents([ev]);
+    const p = state.pending.get(cid);
+    if (!p) return;
+    if (state.msgs.has(ev.seq)) { p.node.remove(); state.pending.delete(cid); restyleGroups(); return; }
+    const meta = p.node.querySelector('.meta');
+    if (meta) meta.innerHTML = meta.innerHTML.replace(clock, ticks);
+    const prog = p.node.querySelector('.upload-prog');
+    if (prog) prog.remove();
+    pollSoon();
+  }
+  function pollSoon() {
+    if (!state.polling) return;
+    if (inflight) { pollAgain = true; return; }
+    clearTimeout(state.pollTimer);
+    poll();
   }
 
   async function sendText(text) {
@@ -744,7 +755,10 @@
   const list = $('list');
   function isNearBottom() { return list.scrollHeight - list.scrollTop - list.clientHeight < 160; }
   function scrollToBottom(instant) {
-    requestAnimationFrame(() => list.scrollTo({ top: list.scrollHeight, behavior: instant ? 'auto' : 'smooth' }));
+    requestAnimationFrame(() => {
+      const far = list.scrollHeight - list.scrollTop - list.clientHeight > list.clientHeight * 2;
+      list.scrollTo({ top: list.scrollHeight, behavior: instant || far ? 'auto' : 'smooth' });
+    });
     $('toBottom').classList.add('hidden');
   }
   list.addEventListener('scroll', () => { if (isNearBottom()) $('toBottom').classList.add('hidden'); }, { passive: true });
@@ -767,15 +781,8 @@
     const canDelete = state.me.role === 'admin' || isOut(m);
     const items = [];
     if (m.kind === 'sticker' && m.set) items.push({ label: 'عرض حزمة الملصقات', action: () => openPackPreview(m.set) });
-    if (state.me.role === 'admin' && m.from.role === 'tg' && m.from.uid && !isOwner(m)) {
-      items.push({ label: `هذا حسابي — يظهر باسم ${state.ownerName}`, action: () => setOwner(m.from.uid) });
-    }
     if (canDelete) items.push({ label: 'حذف الرسالة', danger: true, action: () => deleteMsg(m) });
     if (items.length) attachLongPressEl(bubble, () => sheet(items));
-  }
-  async function setOwner(uid) {
-    try { await api('/api/owner', { json: { uid } }); state.owner = String(uid); relabelOwner(); toast(`صار يظهر باسم ${state.ownerName} ✓`); }
-    catch { toast('ما گدرت أحفظها'); }
   }
   async function deleteMsg(m) {
     try { await api('/api/delete', { json: { id: m.seq } }); removeMessage(m.seq); saveCache(); }

@@ -1,5 +1,5 @@
 // Telegram → app. Only bot 1 has a webhook, so each group message is stored once.
-import { handler, webhookSecret, redis, getGroupId, getOwner, OWNER_NAME, fromTelegram, addEvent, notifyOthers } from './_lib.js';
+import { handler, webhookSecret, redis, getGroupId, fromTelegram, addEvent, notifyOthers } from './_lib.js';
 
 export default handler(async (req, res) => {
   if (req.headers['x-telegram-bot-api-secret-token'] !== webhookSecret()) return res.status(401).end();
@@ -21,8 +21,6 @@ export default handler(async (req, res) => {
 
   const msg = fromTelegram(m, 1);
   if (msg) {
-    const owner = await getOwner(group);
-    if (owner && String(msg.from.uid) === owner) msg.from = { ...msg.from, name: OWNER_NAME, owner: true };
     const ev = await addEvent(msg);
     await notifyOthers(ev);
   }

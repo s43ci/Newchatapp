@@ -1,5 +1,5 @@
 // GET /api/messages?after=<seq>&epoch=<n>  → new events since `after`, plus presence.
-import { handler, requireSession, pipeline, ROLES, OWNER_NAME } from './_lib.js';
+import { handler, requireSession, pipeline, ROLES } from './_lib.js';
 
 export default handler(async (req, res) => {
   const s = requireSession(req);
@@ -8,12 +8,11 @@ export default handler(async (req, res) => {
   const range = after > 0
     ? ['ZRANGEBYSCORE', 'events', `(${after}`, '+inf', 'LIMIT', '0', '500']
     : ['ZRANGE', 'events', '-500', '-1'];
-  const [epoch, items, , otherOnline, owner] = await pipeline([
+  const [epoch, items, , otherOnline] = await pipeline([
     ['GET', 'epoch'],
     range,
     ['SET', `online:${s.role}`, Date.now(), 'EX', '12'],
     ['GET', `online:${other}`],
-    ['GET', 'cfg:owner'],
   ]);
   const ep = parseInt(epoch, 10) || 0;
   const reqEpoch = req.query.epoch != null ? parseInt(req.query.epoch, 10) : ep;
@@ -25,5 +24,5 @@ export default handler(async (req, res) => {
     events = (all[0] || []).map((x) => JSON.parse(x));
     reset = true;
   }
-  res.json({ epoch: ep, reset, events, online: !!otherOnline, otherName: ROLES[other].name, owner: owner && owner !== '0' ? owner : null, ownerName: OWNER_NAME });
+  res.json({ epoch: ep, reset, events, online: !!otherOnline, otherName: ROLES[other].name });
 });

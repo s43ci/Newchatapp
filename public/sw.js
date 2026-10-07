@@ -1,5 +1,5 @@
 // App shell cache for instant launch + push notifications.
-const VERSION = 'abai-v1';
+const VERSION = 'abai-v2';
 const SHELL = ['/', '/app.css', '/app.js', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {
