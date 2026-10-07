@@ -1,11 +1,10 @@
 // POST /api/send  JSON: { text } | { sticker: { file, set, fmt, emoji } }
-import { handler, requireSession, HttpError, tg, getGroupId, fromTelegram, addEvent, notifyOthers } from './_lib.js';
+import { handler, requireSession, HttpError, tg, ensureGroup, fromTelegram, addEvent, notifyOthers } from './_lib.js';
 
 export default handler(async (req, res) => {
   if (req.method !== 'POST') throw new HttpError(405, 'method');
   const s = requireSession(req);
-  const group = await getGroupId();
-  if (!group) throw new HttpError(409, 'not set up');
+  const group = await ensureGroup(req);
   const body = req.body || {};
   const sender = { role: s.role, name: s.name };
   let sent;

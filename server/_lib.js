@@ -25,8 +25,17 @@ export class HttpError extends Error {
 }
 
 // ---------- redis ----------
-const R_URL = env.KV_REST_API_URL || env.UPSTASH_REDIS_REST_URL;
-const R_TOKEN = env.KV_REST_API_TOKEN || env.UPSTASH_REDIS_REST_TOKEN;
+// Vercel's storage integration may add a custom prefix (e.g. STORAGE_KV_REST_API_URL).
+const envBySuffix = (...suffixes) => {
+  for (const suf of suffixes) {
+    if (env[suf]) return env[suf];
+    const k = Object.keys(env).find((x) => x.endsWith(`_${suf}`) && env[x]);
+    if (k) return env[k];
+  }
+  return undefined;
+};
+const R_URL = envBySuffix('KV_REST_API_URL', 'UPSTASH_REDIS_REST_URL');
+const R_TOKEN = envBySuffix('KV_REST_API_TOKEN', 'UPSTASH_REDIS_REST_TOKEN');
 
 export async function redis(...cmd) {
   const [r] = await pipeline([cmd]);
@@ -50,6 +59,39 @@ export async function pipeline(cmds) {
 
 export async function getGroupId() {
   return env.GROUP_CHAT_ID || (await redis('GET', 'cfg:group'));
+}
+
+// Finds the group from bot 1's pending updates (only readable while no webhook is set).
+export async function discoverGroup() {
+  await tg(1, 'deleteWebhook', {});
+  const ups = await tg(1, 'getUpdates', { limit: 100, allowed_updates: ['message', 'my_chat_member'] });
+  const chats = ups
+    .map((u) => (u.message || u.my_chat_member)?.chat)
+    .filter((c) => c && (c.type === 'group' || c.type === 'supergroup'));
+  const last = chats[chats.length - 1];
+  if (!last) return null;
+  await redis('SET', 'cfg:group', String(last.id));
+  return String(last.id);
+}
+
+export async function setWebhook(req) {
+  const host = req.headers['x-forwarded-host'] || req.headers.host;
+  await tg(1, 'setWebhook', {
+    url: `https://${host}/api/webhook`,
+    secret_token: webhookSecret(),
+    allowed_updates: ['message'],
+    drop_pending_updates: false,
+  });
+}
+
+// Used by send/upload: links the group on first use if the admin never ran setup.
+export async function ensureGroup(req) {
+  let group = await getGroupId();
+  if (group) return group;
+  group = await discoverGroup();
+  await setWebhook(req);
+  if (!group) throw new HttpError(409, 'not set up');
+  return group;
 }
 
 // ---------- events (messages + deletions) ----------

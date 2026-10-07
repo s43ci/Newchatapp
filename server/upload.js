@@ -1,11 +1,10 @@
 // POST /api/upload?kind=photo|video|voice&name=...  raw body = file bytes
-import { handler, requireSession, HttpError, tgMultipart, getGroupId, fromTelegram, addEvent, notifyOthers, readBody } from './_lib.js';
+import { handler, requireSession, HttpError, tgMultipart, ensureGroup, fromTelegram, addEvent, notifyOthers, readBody } from './_lib.js';
 
 export default handler(async (req, res) => {
   if (req.method !== 'POST') throw new HttpError(405, 'method');
   const s = requireSession(req);
-  const group = await getGroupId();
-  if (!group) throw new HttpError(409, 'not set up');
+  const group = await ensureGroup(req);
   const kind = String(req.query.kind || '');
   const mime = String(req.headers['content-type'] || 'application/octet-stream');
   const buf = await readBody(req);

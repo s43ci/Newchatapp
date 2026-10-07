@@ -37,7 +37,9 @@
       init.headers = { 'Content-Type': 'application/json' };
       init.body = JSON.stringify(opts.json);
     }
-    const res = await fetch(path, init);
+    let res;
+    try { res = await fetch(path, init); }
+    catch (e) { const err = new Error('network'); err.status = 0; if (e.name === 'AbortError') throw e; throw err; }
     let data = null;
     try { data = await res.json(); } catch {}
     if (!res.ok) {
@@ -183,7 +185,7 @@
       setOnline(data.online);
     } catch (e) {
       if (e.status === 401) { logout(true); return; }
-      if (e.status === 500 || e.status === 409) banner('السيرفر مو مضبوط بعد — راجع إعدادات Vercel');
+      if (e.status >= 500 || e.status === 409) banner(explainError(e));
       else banner('جاري الاتصال…');
     } finally {
       inflight = false;
@@ -531,9 +533,24 @@
     scrollToBottom();
     return { cid, node };
   }
-  function failPending(cid, retry) {
+  // Turns a server error into something the user can act on.
+  function explainError(e) {
+    const m = String((e && e.message) || '');
+    if (e && e.status === 0) return 'ماكو اتصال بالإنترنت';
+    if (/not set up/.test(m)) return 'الگروب مو مربوط: ضيف البوتين للگروب، اكتب رسالة بالگروب، وبعدين ⋮ ← ربط البوتات بالگروب';
+    if (/Redis/.test(m)) return 'قاعدة البيانات مو مربوطة بالمشروع على Vercel (Storage ← Upstash for Redis)';
+    if (/TOKEN is not set/.test(m)) return `${m.split(' ')[0]} مو مضاف بإعدادات Vercel`;
+    if (/Unauthorized|401/.test(m) && /Telegram/.test(m)) return 'توكن البوت غلط';
+    if (/chat not found|not a member|kicked|bot was blocked/.test(m)) return 'البوت مو موجود بالگروب — ضيفه';
+    if (/not enough rights|CHAT_SEND/.test(m)) return 'البوت ما عنده صلاحية يرسل بالگروب';
+    if (/too large|413/.test(m)) return 'الملف كبير هواية';
+    return m || 'صار خطأ';
+  }
+
+  function failPending(cid, retry, err) {
     const p = state.pending.get(cid);
     if (!p) return;
+    if (err) toast(explainError(err), 7000);
     p.node.classList.add('failed');
     const meta = p.node.querySelector('.meta');
     if (meta) meta.innerHTML = '⚠️ ما انرسلت — اضغط لإعادة الإرسال';
@@ -557,7 +574,7 @@
     const { cid } = optimistic({ kind: 'text', text });
     try {
       settle(cid, await api('/api/send', { json: { text, cid } }));
-    } catch (e) { failPending(cid, () => sendText(text)); }
+    } catch (e) { failPending(cid, () => sendText(text), e); }
   }
 
   async function sendSticker(s, set) {
@@ -565,7 +582,7 @@
     const { cid } = optimistic({ kind: 'sticker', file: s.file, fmt: s.fmt, emoji: s.emoji, set, bot: botN });
     try {
       settle(cid, await api('/api/send', { json: { sticker: { file: s.file, set, fmt: s.fmt, emoji: s.emoji }, cid } }));
-    } catch { failPending(cid, () => sendSticker(s, set)); }
+    } catch (e) { failPending(cid, () => sendSticker(s, set), e); }
   }
 
   function uploadFile(kind, blob, extra = {}) {
@@ -584,10 +601,12 @@
         settle(cid, ev);
       } else {
         if (prog) prog.remove();
-        failPending(cid, () => uploadFile(kind, blob, extra));
+        let err = { status: xhr.status, message: `HTTP ${xhr.status}` };
+        try { err.message = JSON.parse(xhr.responseText).error || err.message; } catch {}
+        failPending(cid, () => uploadFile(kind, blob, extra), err);
       }
     };
-    xhr.onerror = () => { if (prog) prog.remove(); failPending(cid, () => uploadFile(kind, blob, extra)); };
+    xhr.onerror = () => { if (prog) prog.remove(); failPending(cid, () => uploadFile(kind, blob, extra), { status: 0 }); };
     xhr.send(blob);
   }
 
@@ -800,7 +819,7 @@
     try {
       const r = await api('/api/setup', { json: {} });
       sheet([{ title: 'نتيجة الربط' }, { note: r.report.join('\n') }]);
-    } catch (e) { sheet([{ title: 'صار خطأ' }, { note: e.message }]); }
+    } catch (e) { sheet([{ title: 'صار خطأ' }, { note: explainError(e) }]); }
   }
 
   async function logout(expired) {
