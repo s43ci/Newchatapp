@@ -284,7 +284,8 @@ export function previewText(m) {
 // Notify everyone except the sender.
 export function notifyOthers(msg) {
   const roles = Object.keys(ROLES).filter((r) => r !== msg.from.role);
-  return notify(roles, { title: msg.from.name, body: previewText(msg), tag: 'chat' });
+  // Deliberately generic: no sender name or message content on the lock screen.
+  return notify(roles, { body: 'رسالة جديدة', tag: 'chat' });
 }
 
 // ---------- clearing ----------
@@ -305,7 +306,7 @@ export async function deleteTelegramMessages(list) {
 
 export async function clearAll() {
   const raw = (await redis('LRANGE', 'tgmsgs', 0, -1)) || [];
-  await pipeline([['DEL', 'events'], ['DEL', 'tgmsgs'], ['INCR', 'epoch']]);
+  await pipeline([['DEL', 'events'], ['DEL', 'tgmsgs'], ['INCR', 'epoch'], ...Object.keys(ROLES).map((r) => ['DEL', `hide:${r}`])]);
   // Messages from Telegram users can only be removed by an admin bot (bot 1).
   await deleteTelegramMessages(raw.map((x) => JSON.parse(x)));
 }

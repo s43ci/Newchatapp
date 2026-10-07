@@ -8,11 +8,12 @@ export default handler(async (req, res) => {
   const range = after > 0
     ? ['ZRANGEBYSCORE', 'events', `(${after}`, '+inf', 'LIMIT', '0', '500']
     : ['ZRANGE', 'events', '-500', '-1'];
-  const [epoch, items, , otherOnline] = await pipeline([
+  const [epoch, items, , otherOnline, hide] = await pipeline([
     ['GET', 'epoch'],
     range,
     ['SET', `online:${s.role}`, Date.now(), 'EX', '12'],
     ['GET', `online:${other}`],
+    ['GET', `hide:${s.role}`],
   ]);
   const ep = parseInt(epoch, 10) || 0;
   const reqEpoch = req.query.epoch != null ? parseInt(req.query.epoch, 10) : ep;
@@ -24,5 +25,8 @@ export default handler(async (req, res) => {
     events = (all[0] || []).map((x) => JSON.parse(x));
     reset = true;
   }
-  res.json({ epoch: ep, reset, events, online: !!otherOnline, otherName: ROLES[other].name });
+  // messages this account cleared from its own view
+  const hiddenUpTo = parseInt(hide, 10) || 0;
+  if (hiddenUpTo) events = events.filter((e) => e.type !== 'msg' || e.seq > hiddenUpTo);
+  res.json({ hiddenUpTo, epoch: ep, reset, events, online: !!otherOnline, otherName: ROLES[other].name });
 });

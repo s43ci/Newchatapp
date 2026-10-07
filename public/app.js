@@ -183,6 +183,12 @@
       }
       state.epoch = data.epoch;
       applyEvents(data.events, data.reset);
+      // cleared "from my side" on another device of this account
+      if (data.hiddenUpTo) {
+        let removed = false;
+        for (const seq of [...state.msgs.keys()]) if (seq <= data.hiddenUpTo) { removeMessage(seq); removed = true; }
+        if (removed) { renderEmpty(); saveCache(); }
+      }
       setOnline(data.online);
     } catch (e) {
       if (e.status === 401) { logout(true); return; }
@@ -244,6 +250,12 @@
     state.msgs.delete(id);
     const n = $('msgs').querySelector(`[data-seq="${id}"]`);
     if (n) n.remove();
+    // drop day separators left with no messages under them
+    for (const d of $('msgs').querySelectorAll('.day')) {
+      const next = d.nextElementSibling;
+      if (!next || !next.classList.contains('row')) d.remove();
+    }
+    if (!$('msgs').querySelector('.row:not(.pending)')) lastDay = null;
     restyleGroups();
   }
 
@@ -841,6 +853,21 @@
         } },
       ]) });
     }
+    items.push({ label: 'حذف المحادثة من عندي', danger: true, action: () => sheet([
+      { title: 'تحذف المحادثة من عندك؟' },
+      { note: 'تنحذف من جهازك وحسابك بس، والطرف الثاني تبقى عنده.' },
+      { label: 'إي، احذف', danger: true, action: async () => {
+        try {
+          await api('/api/hide', { json: {} });
+          const seq = state.lastSeq;
+          clearMessages();
+          state.lastSeq = seq;
+          renderEmpty();
+          saveCache();
+          toast('انحذفت المحادثة من عندك');
+        } catch (e) { toast(explainError(e)); }
+      } },
+    ]) });
     items.push({ label: 'تسجيل خروج', danger: true, action: () => logout(false) });
     sheet(items);
   });

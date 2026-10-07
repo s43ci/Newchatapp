@@ -13,8 +13,9 @@ import del from '../server/delete.js';
 import clear from '../server/clear.js';
 import cron from '../server/cron.js';
 import setup from '../server/setup.js';
+import hide from '../server/hide.js';
 
-const routes = { login, logout, me, messages, send, upload, file, webhook, stickers, push, delete: del, clear, cron, setup };
+const routes = { login, logout, me, messages, send, upload, file, webhook, stickers, push, delete: del, clear, cron, setup, hide };
 
 export default function main(req, res) {
   const path = new URL(req.url, 'http://x').pathname;
