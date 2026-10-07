@@ -18,6 +18,8 @@
     packsLoaded: false,
     activePack: 0,
     online: false,
+    owner: null,
+    ownerName: 'AB',
   };
 
   // ---------------------------------------------------------------- utils
@@ -181,6 +183,8 @@
         state.epoch = data.epoch;
       }
       state.epoch = data.epoch;
+      if (data.ownerName) state.ownerName = data.ownerName;
+      if ((data.owner || null) !== state.owner) { state.owner = data.owner || null; relabelOwner(); }
       applyEvents(data.events, data.reset);
       setOnline(data.online);
     } catch (e) {
@@ -253,6 +257,19 @@
 
   // ---------------------------------------------------------------- rendering
   const isOut = (m) => m.from && m.from.role === state.me.role;
+  // Messages from the owner's own Telegram account show as "AB" (covers ones received before the owner was known).
+  const isOwner = (m) => m.from.owner || (state.owner && m.from.uid && String(m.from.uid) === state.owner);
+  const senderName = (m) => (isOwner(m) ? state.ownerName : m.from.name);
+  function relabelOwner() {
+    for (const row of $('msgs').querySelectorAll('.row[data-seq]')) {
+      const m = state.msgs.get(Number(row.dataset.seq));
+      if (!m || m.from.role !== 'tg') continue;
+      const el = row.querySelector('.sender');
+      if (el) el.textContent = senderName(m);
+      row.dataset.sender = `tg:${senderName(m)}`;
+    }
+    restyleGroups();
+  }
   const senderColor = (m) => (m.from.role === 'admin' ? '' : m.from.role === 'user' ? 'c2' : 'c3');
 
   function appendRow(m) {
@@ -297,12 +314,12 @@
     row.className = `row ${out ? 'out' : 'in'}${opts.pending ? ' pending' : ''}`;
     if (m.seq) row.dataset.seq = m.seq;
     row.dataset.ts = m.ts;
-    row.dataset.sender = m.from.role === 'tg' ? `tg:${m.from.name}` : m.from.role;
+    row.dataset.sender = m.from.role === 'tg' ? `tg:${senderName(m)}` : m.from.role;
 
     const b = document.createElement('div');
     b.className = 'bubble';
     const meta = `<span class="meta">${fmtTime.format(m.ts)}${out ? (opts.pending ? clock : ticks) : ''}</span>`;
-    const sender = out ? '' : `<div class="sender ${senderColor(m)}">${esc(m.from.name)}</div>`;
+    const sender = out ? '' : `<div class="sender ${senderColor(m)}">${esc(senderName(m))}</div>`;
     const caption = m.text && m.kind !== 'text' ? `<div class="text">${linkify(m.text)}${meta}</div>` : '';
 
     if (m.kind === 'text') {
@@ -750,8 +767,15 @@
     const canDelete = state.me.role === 'admin' || isOut(m);
     const items = [];
     if (m.kind === 'sticker' && m.set) items.push({ label: 'عرض حزمة الملصقات', action: () => openPackPreview(m.set) });
+    if (state.me.role === 'admin' && m.from.role === 'tg' && m.from.uid && !isOwner(m)) {
+      items.push({ label: `هذا حسابي — يظهر باسم ${state.ownerName}`, action: () => setOwner(m.from.uid) });
+    }
     if (canDelete) items.push({ label: 'حذف الرسالة', danger: true, action: () => deleteMsg(m) });
     if (items.length) attachLongPressEl(bubble, () => sheet(items));
+  }
+  async function setOwner(uid) {
+    try { await api('/api/owner', { json: { uid } }); state.owner = String(uid); relabelOwner(); toast(`صار يظهر باسم ${state.ownerName} ✓`); }
+    catch { toast('ما گدرت أحفظها'); }
   }
   async function deleteMsg(m) {
     try { await api('/api/delete', { json: { id: m.seq } }); removeMessage(m.seq); saveCache(); }

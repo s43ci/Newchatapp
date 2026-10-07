@@ -84,6 +84,23 @@ export async function setWebhook(req) {
   });
 }
 
+// The app owner's own Telegram account shows as OWNER_NAME instead of their real name.
+export const OWNER_NAME = env.OWNER_NAME || 'AB';
+
+// Owner = whoever the admin marked in the app, otherwise the group's creator.
+export async function getOwner(group) {
+  const saved = await redis('GET', 'cfg:owner');
+  if (saved) return saved === '0' ? null : saved;
+  let id = '0';
+  try {
+    const admins = await tg(1, 'getChatAdministrators', { chat_id: group });
+    const creator = admins.find((a) => a.status === 'creator' && !a.is_anonymous);
+    if (creator) id = String(creator.user.id);
+  } catch { return null; } // try again next time
+  await redis('SET', 'cfg:owner', id, 'NX');
+  return id === '0' ? null : id;
+}
+
 // Used by send/upload: links the group on first use if the admin never ran setup.
 export async function ensureGroup(req) {
   let group = await getGroupId();
@@ -133,7 +150,7 @@ export async function tgMultipart(bot, method, form) {
 export function fromTelegram(m, bot, sender) {
   const base = {
     type: 'msg',
-    from: sender || { role: 'tg', name: [m.from?.first_name, m.from?.last_name].filter(Boolean).join(' ') || 'تيليجرام' },
+    from: sender || { role: 'tg', uid: m.from?.id || null, name: [m.from?.first_name, m.from?.last_name].filter(Boolean).join(' ') || 'تيليجرام' },
     ts: (m.date || Math.floor(Date.now() / 1000)) * 1000,
     bot,
     tg: { chat: m.chat.id, id: m.message_id, bot },
