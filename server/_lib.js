@@ -285,7 +285,8 @@ export function previewText(m) {
 export function notifyOthers(msg) {
   const roles = Object.keys(ROLES).filter((r) => r !== msg.from.role);
   // Deliberately generic: no sender name or message content on the lock screen.
-  return notify(roles, { body: 'رسالة جديدة', tag: 'chat' });
+  // An older service worker shows `body` under the app name, so it carries the text too.
+  return notify(roles, { body: 'اجـاك اشعار', tag: 'chat' });
 }
 
 // ---------- clearing ----------

@@ -96,7 +96,15 @@
 
   // ---------------------------------------------------------------- boot
   async function boot() {
-    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+    if ('serviceWorker' in navigator) {
+      // always check for a new version so fixes (like notification text) reach the phone right away
+      navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' })
+        .then((reg) => {
+          reg.update().catch(() => {});
+          document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
+        })
+        .catch(() => {});
+    }
     try {
       const me = await api('/api/me');
       enterChat(me);

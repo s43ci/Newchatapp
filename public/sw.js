@@ -1,5 +1,5 @@
 // App shell cache for instant launch + push notifications.
-const VERSION = 'abai-v3';
+const VERSION = 'abai-v4';
 const SHELL = ['/', '/app.css', '/app.js', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {
@@ -36,8 +36,7 @@ self.addEventListener('push', (e) => {
   let data = {};
   try { data = e.data.json(); } catch {}
   e.waitUntil(
-    self.registration.showNotification('Ab Ai', {
-      body: 'رسالة جديدة',
+    self.registration.showNotification('اجـاك اشعار', {
       icon: '/icons/icon-192.png',
       badge: '/icons/badge-96.png',
       tag: data.tag || 'chat',
