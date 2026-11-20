@@ -1,5 +1,5 @@
 // GET /api/messages?after=<seq>&epoch=<n>  → new events since `after`, plus presence.
-import { handler, requireSession, pipeline, ROLES } from './_lib.js';
+import { handler, requireSession, pipeline, ROLES, checkBridge } from './_lib.js';
 
 export default handler(async (req, res) => {
   const s = requireSession(req);
@@ -28,5 +28,11 @@ export default handler(async (req, res) => {
   // messages this account cleared from its own view
   const hiddenUpTo = parseInt(hide, 10) || 0;
   if (hiddenUpTo) events = events.filter((e) => e.type !== 'msg' || e.seq > hiddenUpTo);
-  res.json({ hiddenUpTo, epoch: ep, reset, events, online: !!otherOnline, otherName: ROLES[other].name });
+  // the admin's app keeps the Telegram link healthy and surfaces what needs fixing
+  let bridge = null;
+  if (s.role === 'admin') {
+    try { bridge = await checkBridge(req, req.query.check === '1'); }
+    catch (e) { bridge = { problems: [`check:${e.message}`] }; }
+  }
+  res.json({ bridge, hiddenUpTo, epoch: ep, reset, events, online: !!otherOnline, otherName: ROLES[other].name });
 });

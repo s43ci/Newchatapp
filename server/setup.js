@@ -1,5 +1,5 @@
 // POST /api/setup (admin) — finds the group, points bot 1's webhook here, names the group.
-import { handler, requireSession, HttpError, tg, getGroupId, discoverGroup, setWebhook } from './_lib.js';
+import { handler, requireSession, HttpError, tg, redis, getGroupId, discoverGroup, setWebhook } from './_lib.js';
 
 export default handler(async (req, res) => {
   if (req.method !== 'POST') throw new HttpError(405, 'method');
@@ -14,6 +14,7 @@ export default handler(async (req, res) => {
   report.push(group ? `الگروب: ${group}` : 'ما لگيت الگروب بعد — اكتب أي رسالة بالگروب وبعدين سوّ الربط مرة ثانية');
 
   await setWebhook(req);
+  await redis('DEL', 'bridge:status');
   await tg(2, 'deleteWebhook', {}).catch(() => {});
   report.push('الويب هوك اشتغل ✓');
 

@@ -77,14 +77,56 @@ export async function discoverGroup() {
   return String(last.id);
 }
 
+// Telegram must call the stable production domain: a per-deployment URL may sit behind
+// Vercel's login wall or point at an old build.
+export function webhookUrl(req) {
+  const host = env.VERCEL_PROJECT_PRODUCTION_URL || req.headers['x-forwarded-host'] || req.headers.host;
+  return `https://${host}/api/webhook`;
+}
+
 export async function setWebhook(req) {
-  const host = req.headers['x-forwarded-host'] || req.headers.host;
   await tg(1, 'setWebhook', {
-    url: `https://${host}/api/webhook`,
+    url: webhookUrl(req),
     secret_token: webhookSecret(),
     allowed_updates: ['message'],
     drop_pending_updates: false,
   });
+}
+
+// Self-check of the Telegram → app path, run at most every few minutes (or on demand).
+// Repairs what it can (missing group, wrong webhook URL) and reports the rest as codes
+// the app explains to the admin.
+export async function checkBridge(req, force = false) {
+  if (!force) {
+    const cached = await redis('GET', 'bridge:status');
+    if (cached) return JSON.parse(cached);
+  }
+  const problems = [];
+  let group = await getGroupId();
+  const expected = webhookUrl(req);
+  let info = await tg(1, 'getWebhookInfo');
+  if (!group) {
+    group = await discoverGroup().catch(() => null);
+    info = { url: '' }; // discoverGroup removed the webhook
+  }
+  if (info.url !== expected) {
+    await setWebhook(req);
+    info = await tg(1, 'getWebhookInfo');
+  }
+  const recentError = info.last_error_date && Date.now() / 1000 - info.last_error_date < 600;
+  if (recentError && info.last_error_message) problems.push(`webhook:${info.last_error_message}`);
+  if (!group) problems.push('no_group');
+  else {
+    const [me1, me2] = await Promise.all([tg(1, 'getMe'), tg(2, 'getMe')]);
+    const m1 = await tg(1, 'getChatMember', { chat_id: group, user_id: me1.id }).catch(() => null);
+    if (!m1 || ['left', 'kicked'].includes(m1.status)) problems.push('bot1_missing');
+    else if (m1.status !== 'administrator' && !me1.can_read_all_group_messages) problems.push('privacy');
+    const m2 = await tg(2, 'getChatMember', { chat_id: group, user_id: me2.id }).catch(() => null);
+    if (!m2 || ['left', 'kicked'].includes(m2.status)) problems.push('bot2_missing');
+  }
+  const status = { problems, webhook: info.url, pending: info.pending_update_count || 0, checked: Date.now() };
+  await redis('SET', 'bridge:status', JSON.stringify(status), 'EX', problems.length ? 60 : 600);
+  return status;
 }
 
 // Used by send/upload: links the group on first use if the admin never ran setup.

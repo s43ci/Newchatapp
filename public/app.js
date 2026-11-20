@@ -184,7 +184,7 @@
       const to = setTimeout(() => ctrl.abort(), 9000);
       const data = await api(`/api/messages${q}`, { signal: ctrl.signal });
       clearTimeout(to);
-      $('banner').classList.add('hidden');
+      showBridge(data.bridge);
       if (data.reset) {
         clearMessages();
         state.epoch = data.epoch;
@@ -209,6 +209,37 @@
       pollAgain = false;
     }
   }
+  // Explains Telegram-link problems to the admin; tapping the banner re-checks.
+  function bridgeText(code) {
+    if (code === 'no_group') return 'الگروب مو مربوط: اكتب أي رسالة بالگروب من التيليجرام';
+    if (code === 'privacy') return 'البوت الأول مو أدمن بالگروب، فما يشوف رسائل التيليجرام. خليه أدمن';
+    if (code === 'bot1_missing') return 'البوت الأول مو موجود بالگروب — ضيفه وخليه أدمن';
+    if (code === 'bot2_missing') return 'البوت الثاني مو موجود بالگروب — ضيفه';
+    if (code.startsWith('webhook:')) {
+      const m = code.slice(8);
+      if (/401|403/.test(m)) return 'تيليجرام ما يگدر يوصل للتطبيق: طفّي Vercel Authentication من Settings ← Deployment Protection';
+      return `تيليجرام ما يگدر يوصل للتطبيق: ${m}`;
+    }
+    if (code.startsWith('check:')) return explainError({ message: code.slice(6) });
+    return code;
+  }
+  function showBridge(bridge) {
+    const b = $('banner');
+    if (bridge && bridge.problems && bridge.problems.length) {
+      b.textContent = `⚠️ ${bridgeText(bridge.problems[0])} (اضغط للفحص مرة ثانية)`;
+      b.dataset.bridge = '1';
+      b.classList.remove('hidden');
+    } else {
+      b.dataset.bridge = '';
+      b.classList.add('hidden');
+    }
+  }
+  $('banner').addEventListener('click', async () => {
+    if (!$('banner').dataset.bridge) return;
+    toast('جاري الفحص…');
+    try { showBridge((await api('/api/messages?after=' + state.lastSeq + '&epoch=' + state.epoch + '&check=1')).bridge); toast('تم الفحص'); }
+    catch (e) { toast(explainError(e)); }
+  });
   function banner(t) { const b = $('banner'); b.textContent = t; b.classList.remove('hidden'); }
   function setOnline(on) {
     state.online = on;
