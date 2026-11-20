@@ -24,12 +24,18 @@ export default handler(async (req, res) => {
     // Telegram only renders OGG/Opus, MP3 and M4A as voice notes; anything else goes as a file.
     if (/ogg|mpeg|mp4|m4a|aac/.test(mime)) { method = 'sendVoice'; form.append('voice', blob, `voice.${ext === 'mp4' ? 'm4a' : ext}`); }
     else { method = 'sendDocument'; form.append('document', blob, `voice.${ext}`); }
+  } else if (kind === 'file') {
+    // documents keep their real name so they download as e.g. report.docx
+    const name = String(req.query.name || 'file').replace(/[\\/\r\n"]/g, '_').slice(0, 120) || 'file';
+    method = 'sendDocument';
+    form.append('document', blob, name);
   } else throw new HttpError(400, 'kind');
 
   const sent = await tgMultipart(s.bot, method, form);
   const msg = fromTelegram(sent, s.bot, { role: s.role, name: s.name });
   if (kind === 'voice') { msg.kind = 'voice'; msg.mime = mime; }
   if (kind === 'photo' && msg.kind !== 'photo') msg.kind = 'photo';
+  if (kind === 'file') { msg.kind = 'file'; msg.name = String(req.query.name || msg.name || 'file'); msg.size = buf.length; }
   msg.cid = req.query.cid || null;
   if (orig?.type === 'msg') msg.reply = replySnapshot(orig);
   const dur = parseFloat(req.query.dur);

@@ -216,7 +216,7 @@ export function fromTelegram(m, bot, sender) {
     if (/^voice\./.test(d.file_name || '') || /^audio\//.test(d.mime_type || '')) return { ...base, kind: 'voice', file: d.file_id, mime: d.mime_type };
     if (/^image\//.test(d.mime_type || '')) return { ...base, kind: 'photo', file: d.file_id };
     if (/^video\//.test(d.mime_type || '')) return { ...base, kind: 'video', file: d.file_id, mime: d.mime_type };
-    return { ...base, kind: 'file', file: d.file_id, name: d.file_name || 'ملف' };
+    return { ...base, kind: 'file', file: d.file_id, name: d.file_name || 'ملف', size: d.file_size || 0, mime: d.mime_type || '' };
   }
   if (m.text != null || m.caption != null) return { ...base, kind: 'text' };
   return null;

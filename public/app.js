@@ -67,6 +67,17 @@
   // ---------------------------------------------------------------- protection
   // Block zoom, selection, copying, saving and context menus everywhere except the text box.
   const editable = (el) => el && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT');
+  // On a computer, message text can be selected and copied (images and files stay protected).
+  const desktop = window.matchMedia('(pointer: fine)').matches;
+  const inText = (el) => desktop && el && el.closest && !!el.closest('.text');
+  const selectionInText = () => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return '';
+    const node = sel.getRangeAt(0).commonAncestorContainer;
+    const el = node.nodeType === 1 ? node : node.parentElement;
+    return el && el.closest && el.closest('.bubble') ? sel.toString() : '';
+  };
+  if (desktop) document.documentElement.classList.add('desktop');
   for (const ev of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(ev, (e) => e.preventDefault(), { passive: false });
   document.addEventListener('touchmove', (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
   let lastTouchEnd = 0;
@@ -78,12 +89,16 @@
   document.addEventListener('wheel', (e) => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
   document.addEventListener('contextmenu', (e) => { if (!editable(e.target)) e.preventDefault(); });
   document.addEventListener('dragstart', (e) => e.preventDefault());
-  document.addEventListener('selectstart', (e) => { if (!editable(e.target)) e.preventDefault(); });
-  for (const ev of ['copy', 'cut']) document.addEventListener(ev, (e) => { if (!editable(e.target)) e.preventDefault(); });
+  document.addEventListener('selectstart', (e) => {
+    const t = e.target.nodeType === 1 ? e.target : e.target.parentElement;
+    if (!editable(t) && !inText(t)) e.preventDefault();
+  });
+  for (const ev of ['copy', 'cut']) document.addEventListener(ev, (e) => { if (!editable(e.target) && !(desktop && selectionInText())) e.preventDefault(); });
   document.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
     if ((e.ctrlKey || e.metaKey) && ['+', '-', '=', '0', 's', 'p'].includes(k)) e.preventDefault();
-    if ((e.ctrlKey || e.metaKey) && ['c', 'a', 'x'].includes(k) && !editable(e.target)) e.preventDefault();
+    if ((e.ctrlKey || e.metaKey) && ['a', 'x'].includes(k) && !editable(e.target)) e.preventDefault();
+    if ((e.ctrlKey || e.metaKey) && k === 'c' && !editable(e.target) && !selectionInText()) e.preventDefault();
     if (k === 'printscreen') { shield(true); setTimeout(() => shield(false), 1500); }
   });
   function shield(on) { $('shield').classList.toggle('hidden', !on); }
@@ -421,7 +436,11 @@
       lazy(box, () => drawSticker(box, m, m.file, m.fmt));
       if (m.set) box.addEventListener('click', () => openPackPreview(m.set));
     } else {
-      b.innerHTML = `${sender}<div class="filebox">📎 <span>${esc(m.name || 'ملف')}</span></div>${caption || meta}`;
+      const ext = (String(m.name || '').split('.').pop() || '').toLowerCase();
+      const kindCls = /^docx?$|^rtf$|^odt$/.test(ext) ? 'w' : ext === 'pdf' ? 'pdf' : /^xlsx?$|^csv$/.test(ext) ? 'x' : /^pptx?$/.test(ext) ? 'p' : /^(zip|rar|7z)$/.test(ext) ? 'z' : '';
+      b.classList.add('file');
+      b.innerHTML = `${sender}<button class="filebox" type="button"><span class="fico ${kindCls}">${esc(ext.slice(0, 4).toUpperCase() || 'FILE')}</span><span class="finfo"><span class="fname" dir="auto">${esc(m.name || 'ملف')}</span><span class="fsize">${m.size ? fmtSize(m.size) + ' · ' : ''}تحميل</span></span></button>${caption || `<div>${meta}</div>`}`;
+      b.querySelector('.filebox').addEventListener('click', () => downloadFile(m, opts.localUrl));
     }
     if (opts.progress) {
       const p = document.createElement('div');
@@ -446,6 +465,18 @@
     row.appendChild(b);
     if (m.seq) attachLongPress(b, m);
     return row;
+  }
+
+  function fmtSize(n) {
+    return n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+  }
+  function downloadFile(m, localUrl) {
+    const a = document.createElement('a');
+    a.href = localUrl || `${fileUrl(m)}&dl=1&name=${encodeURIComponent(m.name || 'file')}`;
+    a.download = m.name || 'file';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
   }
 
   const playIcon = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
@@ -712,6 +743,7 @@
     const prog = node.querySelector('.upload-prog');
     const params = new URLSearchParams({ kind, cid });
     if (extra.dur) params.set('dur', String(extra.dur));
+    if (extra.name) params.set('name', extra.name);
     if (reply && reply.seq) params.set('replyTo', String(reply.seq));
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `/api/upload?${params}`);
@@ -749,16 +781,19 @@
     return { blob, w, h };
   }
 
-  async function handleFiles(files) {
+  async function handleFiles(files, asDocuments = false) {
     for (const f of files) {
-      if (f.type.startsWith('image/')) {
+      if (asDocuments || !/^(image|video)\//.test(f.type)) {
+        if (f.size > MAX_UPLOAD) { toast(`${f.name}: الملف أكبر من 4 ميگا — الحد الأقصى للرفع 4 ميگا`, 4000); continue; }
+        uploadFile('file', f, { name: f.name, size: f.size });
+      } else if (f.type.startsWith('image/')) {
         const { blob, w, h } = await compressImage(f);
         if (blob.size > MAX_UPLOAD) { toast('الصورة كبيرة هواية'); continue; }
         uploadFile('photo', blob, { w, h });
       } else if (f.type.startsWith('video/')) {
         if (f.size > MAX_UPLOAD) { toast('الفيديو أكبر من 4 ميگا — الحد الأقصى للرفع 4 ميگا'); continue; }
         uploadFile('video', f);
-      } else toast('نوع الملف مو مدعوم');
+      }
     }
   }
 
@@ -841,7 +876,11 @@
     else startRecording();
   });
   $('recCancel').addEventListener('click', () => stopRecording(true));
-  $('attachBtn').addEventListener('click', () => $('fileInput').click());
+  $('attachBtn').addEventListener('click', () => sheet([
+    { label: '🖼️  صورة أو فيديو', action: () => $('fileInput').click() },
+    { label: '📄  ملف (وورد، PDF، …)', action: () => $('docInput').click() },
+  ]));
+  $('docInput').addEventListener('change', (e) => { handleFiles([...e.target.files], true); e.target.value = ''; });
   $('fileInput').addEventListener('change', (e) => { handleFiles([...e.target.files]); e.target.value = ''; });
   $('stickerBtn').addEventListener('click', () => toggleStickers());
 
@@ -875,7 +914,7 @@
     const canDelete = state.me.role === 'admin' || isOut(m);
     const items = [];
     items.push({ label: '↩️  رد', action: () => { setReply(m); ta.focus(); } });
-    if (m.text) items.push({ label: '📋  نسخ', action: () => copyText(m.text) });
+    if (m.text) items.push({ label: '📋  نسخ', action: () => copyText(selectionInText() || m.text) });
     if (m.kind === 'sticker' && m.set) items.push({ label: 'عرض حزمة الملصقات', action: () => openPackPreview(m.set) });
     if (canDelete) items.push({ label: 'حذف الرسالة', danger: true, action: () => deleteMsg(m) });
     if (items.length) attachLongPressEl(bubble, () => sheet(items));
