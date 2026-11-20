@@ -18,6 +18,7 @@
     packsLoaded: false,
     activePack: 0,
     online: false,
+    replyTo: null, // message being answered
   };
 
   // ---------------------------------------------------------------- utils
@@ -262,6 +263,8 @@
       const p = ev.cid && state.pending.get(ev.cid);
       if (p) { // our optimistic bubble → swap in the real one
         state.pending.delete(ev.cid);
+        const d = dayChip(ev);
+        if (d) p.node.before(d);
         p.node.replaceWith(renderRow(ev));
       } else {
         appendRow(ev, !isReset && !initialRender);
@@ -313,18 +316,41 @@
   const isOut = (m) => m.from && m.from.role === state.me.role;
   // Telegram-app senders all show as "ادمن" (also relabels messages stored before this rule).
   const senderName = (m) => (m.from.role === 'tg' ? 'ادمن' : m.from.name);
+  const preview = (m) => (m.kind === 'text' ? m.text
+    : m.kind === 'photo' ? `📷 ${m.text || 'صورة'}`
+    : m.kind === 'video' ? `🎬 ${m.text || 'فيديو'}`
+    : m.kind === 'voice' ? '🎤 رسالة صوتية'
+    : m.kind === 'sticker' ? `${m.emoji || ''} ملصق`
+    : '📎 ملف');
+  // The message a reply answers: by our id, or by Telegram id for replies made in the Telegram app.
+  function replyTarget(m) {
+    if (m.reply) {
+      const live = state.msgs.get(m.reply.seq);
+      return live ? { seq: live.seq, name: senderName(live), text: preview(live) } : m.reply;
+    }
+    if (m.replyTg) {
+      for (const o of state.msgs.values()) {
+        if (o.tg && o.tg.id === m.replyTg) return { seq: o.seq, name: senderName(o), text: preview(o) };
+      }
+    }
+    return null;
+  }
   const senderColor = (m) => (m.from.role === 'admin' ? '' : m.from.role === 'user' ? 'c2' : 'c3');
 
   let lastDay = null;
-  function appendRow(m, animate) {
+  // A day separator if `m` starts a new day, else null.
+  function dayChip(m) {
     const day = dayKey(m.ts);
-    if (day !== lastDay) {
-      lastDay = day;
-      const d = document.createElement('div');
-      d.className = 'day';
-      d.innerHTML = `<span>${day === dayKey(Date.now()) ? 'اليوم' : fmtDay.format(m.ts)}</span>`;
-      insertBeforePending(d);
-    }
+    if (day === lastDay) return null;
+    lastDay = day;
+    const d = document.createElement('div');
+    d.className = 'day';
+    d.innerHTML = `<span>${day === dayKey(Date.now()) ? 'اليوم' : fmtDay.format(m.ts)}</span>`;
+    return d;
+  }
+  function appendRow(m, animate) {
+    const d = dayChip(m);
+    if (d) insertBeforePending(d);
     const row = renderRow(m);
     if (animate) row.classList.add('enter');
     insertBeforePending(row);
@@ -365,10 +391,12 @@
     b.className = 'bubble';
     const meta = `<span class="meta">${fmtTime.format(m.ts)}${out ? (opts.pending ? clock : ticks) : ''}</span>`;
     const sender = out ? '' : `<div class="sender ${senderColor(m)}">${esc(senderName(m))}</div>`;
-    const caption = m.text && m.kind !== 'text' ? `<div class="text">${linkify(m.text)}${meta}</div>` : '';
+    const rt = replyTarget(m);
+    const quote = rt ? `<div class="quote" data-seq="${rt.seq || ''}"><b>${esc(rt.name)}</b><span>${esc(String(rt.text).slice(0, 90))}</span></div>` : '';
+    const caption = m.text && m.kind !== 'text' ? `<div class="text" dir="auto">${linkify(m.text)}${meta}</div>` : '';
 
     if (m.kind === 'text') {
-      b.innerHTML = `${sender}<div class="text">${linkify(m.text)}${meta}</div>`;
+      b.innerHTML = `${sender}${quote}<div class="text" dir="auto">${linkify(m.text)}${meta}</div>`;
     } else if (m.kind === 'photo') {
       b.classList.add('media');
       const ratio = m.w && m.h ? Math.min(Math.max(m.h / m.w, 0.4), 1.6) : 0.75;
@@ -407,6 +435,14 @@
       av.textContent = senderName(m).trim().charAt(0);
       row.appendChild(av);
     }
+    if (quote && m.kind !== 'text') {
+      const q = document.createElement('div');
+      q.innerHTML = quote;
+      const after = b.querySelector('.sender');
+      b.insertBefore(q.firstChild, after ? after.nextSibling : b.firstChild);
+    }
+    const qEl = b.querySelector('.quote');
+    if (qEl) qEl.addEventListener('click', (e) => { e.stopPropagation(); jumpTo(Number(qEl.dataset.seq)); });
     row.appendChild(b);
     if (m.seq) attachLongPress(b, m);
     return row;
@@ -649,27 +685,34 @@
     poll();
   }
 
-  async function sendText(text) {
-    const { cid } = optimistic({ kind: 'text', text });
+  // Takes the pending reply (if any) for the message being sent now.
+  function takeReply() {
+    const m = state.replyTo;
+    setReply(null);
+    return m ? { seq: m.seq, name: senderName(m), text: preview(m) } : null;
+  }
+  async function sendText(text, reply = takeReply()) {
+    const { cid } = optimistic({ kind: 'text', text, reply });
     try {
-      settle(cid, await api('/api/send', { json: { text, cid } }));
-    } catch (e) { failPending(cid, () => sendText(text), e); }
+      settle(cid, await api('/api/send', { json: { text, cid, replyTo: reply && reply.seq } }));
+    } catch (e) { failPending(cid, () => sendText(text, reply), e); }
   }
 
-  async function sendSticker(s, set) {
+  async function sendSticker(s, set, reply = takeReply()) {
     const botN = state.me.role === 'admin' ? 1 : 2;
-    const { cid } = optimistic({ kind: 'sticker', file: s.file, fmt: s.fmt, emoji: s.emoji, set, bot: botN });
+    const { cid } = optimistic({ kind: 'sticker', file: s.file, fmt: s.fmt, emoji: s.emoji, set, bot: botN, reply });
     try {
-      settle(cid, await api('/api/send', { json: { sticker: { file: s.file, set, fmt: s.fmt, emoji: s.emoji }, cid } }));
-    } catch (e) { failPending(cid, () => sendSticker(s, set), e); }
+      settle(cid, await api('/api/send', { json: { sticker: { file: s.file, set, fmt: s.fmt, emoji: s.emoji }, cid, replyTo: reply && reply.seq } }));
+    } catch (e) { failPending(cid, () => sendSticker(s, set, reply), e); }
   }
 
-  function uploadFile(kind, blob, extra = {}) {
+  function uploadFile(kind, blob, extra = {}, reply = takeReply()) {
     const localUrl = URL.createObjectURL(blob);
-    const { cid, node } = optimistic({ kind, ...extra }, { localUrl, progress: true });
+    const { cid, node } = optimistic({ kind, ...extra, reply }, { localUrl, progress: true });
     const prog = node.querySelector('.upload-prog');
     const params = new URLSearchParams({ kind, cid });
     if (extra.dur) params.set('dur', String(extra.dur));
+    if (reply && reply.seq) params.set('replyTo', String(reply.seq));
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `/api/upload?${params}`);
     xhr.setRequestHeader('Content-Type', blob.type || 'application/octet-stream');
@@ -831,10 +874,46 @@
   function attachLongPress(bubble, m) {
     const canDelete = state.me.role === 'admin' || isOut(m);
     const items = [];
+    items.push({ label: '↩️  رد', action: () => { setReply(m); ta.focus(); } });
+    if (m.text) items.push({ label: '📋  نسخ', action: () => copyText(m.text) });
     if (m.kind === 'sticker' && m.set) items.push({ label: 'عرض حزمة الملصقات', action: () => openPackPreview(m.set) });
     if (canDelete) items.push({ label: 'حذف الرسالة', danger: true, action: () => deleteMsg(m) });
     if (items.length) attachLongPressEl(bubble, () => sheet(items));
   }
+  function setReply(m) {
+    state.replyTo = m;
+    $('replyBar').classList.toggle('hidden', !m);
+    if (m) {
+      $('replyName').textContent = senderName(m);
+      $('replyText').textContent = preview(m);
+    }
+  }
+  $('replyCancel').addEventListener('click', () => setReply(null));
+
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); }
+    catch {
+      const t = document.createElement('textarea');
+      t.value = text;
+      t.style.cssText = 'position:fixed;opacity:0;top:0';
+      document.body.appendChild(t);
+      t.select();
+      try { document.execCommand('copy'); } catch {}
+      t.remove();
+    }
+    toast('انتسخت ✓', 1200);
+  }
+
+  // Scroll to a message (e.g. tapping a quoted reply) and flash it.
+  function jumpTo(seq) {
+    const row = seq && $('msgs').querySelector(`[data-seq="${seq}"]`);
+    if (!row) { toast('الرسالة الأصلية انحذفت'); return; }
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    row.classList.remove('flash');
+    void row.offsetWidth;
+    row.classList.add('flash');
+  }
+
   async function deleteMsg(m) {
     try { await api('/api/delete', { json: { id: m.seq } }); removeMessage(m.seq); saveCache(); }
     catch { toast('ما گدرت أحذفها'); }
@@ -928,6 +1007,7 @@
       if (sub && !expired) { await api('/api/push', { method: 'DELETE', json: { subscription: sub } }).catch(() => {}); await sub.unsubscribe(); }
     } catch {}
     localStorage.removeItem(CACHE_KEY);
+    setReply(null);
     state.me = null;
     state.msgs.clear();
     state.pending.clear();

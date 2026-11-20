@@ -1,5 +1,5 @@
 // POST /api/upload?kind=photo|video|voice&name=...  raw body = file bytes
-import { handler, requireSession, HttpError, tgMultipart, ensureGroup, fromTelegram, addEvent, notifyOthers, readBody } from './_lib.js';
+import { handler, requireSession, HttpError, tgMultipart, ensureGroup, fromTelegram, addEvent, notifyOthers, readBody, findMessage, replySnapshot, replyParams } from './_lib.js';
 
 export default handler(async (req, res) => {
   if (req.method !== 'POST') throw new HttpError(405, 'method');
@@ -13,6 +13,9 @@ export default handler(async (req, res) => {
   const ext = (mime.split('/')[1] || 'bin').split(';')[0].replace('x-', '').replace('quicktime', 'mov').replace('jpeg', 'jpg');
   const form = new FormData();
   form.append('chat_id', String(group));
+  const orig = req.query.replyTo ? await findMessage(parseInt(req.query.replyTo, 10)) : null;
+  const reply = orig?.type === 'msg' ? replyParams(orig, group) : null;
+  if (reply) form.append('reply_parameters', JSON.stringify(reply));
   const blob = new Blob([buf], { type: mime });
   let method;
   if (kind === 'photo') { method = 'sendPhoto'; form.append('photo', blob, `photo.${ext}`); }
@@ -28,6 +31,7 @@ export default handler(async (req, res) => {
   if (kind === 'voice') { msg.kind = 'voice'; msg.mime = mime; }
   if (kind === 'photo' && msg.kind !== 'photo') msg.kind = 'photo';
   msg.cid = req.query.cid || null;
+  if (orig?.type === 'msg') msg.reply = replySnapshot(orig);
   const dur = parseFloat(req.query.dur);
   if (dur > 0) msg.dur = Math.round(dur);
   const ev = await addEvent(msg);

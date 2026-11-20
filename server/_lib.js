@@ -155,6 +155,18 @@ export async function findMessage(id) {
   return all && all[0] ? JSON.parse(all[0]) : null;
 }
 
+// ---------- replies ----------
+// What a reply shows of the message it answers (kept even if the original is deleted).
+export function replySnapshot(orig) {
+  return { seq: orig.seq, name: orig.from.role === 'tg' ? TG_NAME : orig.from.name, text: previewText(orig) };
+}
+
+// Telegram reply parameters, so the reply also shows as one inside the group.
+export function replyParams(orig, group) {
+  if (!orig?.tg || String(orig.tg.chat) !== String(group)) return null;
+  return { message_id: orig.tg.id, allow_sending_without_reply: true };
+}
+
 // ---------- telegram ----------
 export async function tg(bot, method, params = {}) {
   const res = await fetch(`https://api.telegram.org/bot${botToken(bot)}/${method}`, {

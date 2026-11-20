@@ -54,6 +54,11 @@
       <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
 
+    <div id="replyBar" class="reply-bar hidden">
+      <svg class="reply-ico" viewBox="0 0 24 24"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/></svg>
+      <div class="reply-info"><b id="replyName"></b><span id="replyText"></span></div>
+      <button id="replyCancel" class="icon-btn small" aria-label="إلغاء الرد">✕</button>
+    </div>
     <footer class="composer">
       <div id="recBar" class="rec-bar hidden">
         <button id="recCancel" class="icon-btn danger" aria-label="إلغاء">
