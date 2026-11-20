@@ -351,3 +351,16 @@ svg { width: 24px; height: 24px; fill: currentColor; }
 .reply-info b { display: block; color: var(--accent); }
 .reply-info span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
 .desktop .text .meta { -webkit-user-select: none; user-select: none; }
+
+/* ---------- drag & drop ---------- */
+.drop-zone {
+  position: absolute; inset: 0; z-index: 15; display: grid; place-items: center; padding: 24px;
+  background: rgba(15, 20, 40, 0.35); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+  pointer-events: none; animation: fade .15s;
+}
+.drop-box {
+  width: 100%; max-width: 420px; height: 220px; border-radius: 22px; border: 3px dashed var(--accent);
+  background: var(--panel-solid); color: var(--accent); display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 12px; font-size: 17px;
+}
+.drop-box svg { width: 48px; height: 48px; }

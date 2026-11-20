@@ -881,6 +881,57 @@
     { label: '📄  ملف (وورد، PDF، …)', action: () => $('docInput').click() },
   ]));
   $('docInput').addEventListener('change', (e) => { handleFiles([...e.target.files], true); e.target.value = ''; });
+
+  // ---------------------------------------------------------------- paste & drag-and-drop
+  // Files pasted (Ctrl+V) or dropped on the chat are confirmed first, like Telegram.
+  function confirmFiles(files) {
+    files = files.filter((f) => f && f.size > 0);
+    if (!files.length || !state.me) return;
+    const media = files.some((f) => /^(image|video)\//.test(f.type));
+    const names = files.map((f) => `• ${f.name || 'صورة'} (${fmtSize(f.size)})`).join('\n');
+    const items = [
+      { title: files.length === 1 ? 'إرسال ملف' : `إرسال ${files.length} ملفات` },
+      { note: names },
+      { label: 'إرسال', primary: true, action: () => handleFiles(files) },
+    ];
+    if (media) items.push({ label: 'إرسال كملف (بدون ضغط)', action: () => handleFiles(files, true) });
+    sheet(items);
+  }
+
+  document.addEventListener('paste', (e) => {
+    if (!state.me || $('chat').classList.contains('hidden')) return;
+    const files = [...(e.clipboardData ? e.clipboardData.files : [])];
+    if (!files.length) return; // plain text pastes into the box as usual
+    e.preventDefault();
+    // screenshots arrive as "image.png": give them a readable name
+    confirmFiles(files.map((f, i) => (f.name === 'image.png' ? new File([f], `صورة-${Date.now()}${i ? '-' + i : ''}.png`, { type: f.type }) : f)));
+  });
+
+  let dragDepth = 0;
+  const hasFiles = (e) => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+  document.addEventListener('dragenter', (e) => {
+    if (!hasFiles(e) || !state.me) return;
+    e.preventDefault();
+    dragDepth++;
+    $('dropZone').classList.remove('hidden');
+  });
+  document.addEventListener('dragover', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = state.me ? 'copy' : 'none';
+  });
+  document.addEventListener('dragleave', (e) => {
+    if (!hasFiles(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (!dragDepth) $('dropZone').classList.add('hidden');
+  });
+  document.addEventListener('drop', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    $('dropZone').classList.add('hidden');
+    confirmFiles([...e.dataTransfer.files]);
+  });
   $('fileInput').addEventListener('change', (e) => { handleFiles([...e.target.files]); e.target.value = ''; });
   $('stickerBtn').addEventListener('click', () => toggleStickers());
 
