@@ -2,7 +2,9 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const CACHE_KEY = 'abai:v1';
-  const MAX_UPLOAD = 4.3 * 1024 * 1024; // Vercel request body limit is 4.5 MB
+  const MAX_UPLOAD = 4.3 * 1024 * 1024; // one request (Vercel's body limit is 4.5 MB)
+  const MAX_FILE = 20 * 1024 * 1024; // Telegram bots can't download anything bigger
+  const CHUNK = 700 * 1024; // bigger files go up in parts of this size
   const POLL_MS = 1200;
 
   const state = {
@@ -174,7 +176,7 @@
   function saveCache() {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
-      const events = [...state.msgs.values()].slice(-300);
+      const events = [...state.msgs.values()].sort((a, b) => a.seq - b.seq).slice(-300);
       try { localStorage.setItem(CACHE_KEY, JSON.stringify({ me: state.me, epoch: state.epoch, events })); } catch {}
     }, 400);
   }
@@ -299,6 +301,7 @@
     state.msgs.clear();
     state.lastSeq = 0;
     lastDay = null;
+    noMoreOlder = false;
     $('msgs').innerHTML = '';
     for (const p of state.pending.values()) $('msgs').appendChild(p.node);
   }
@@ -322,7 +325,7 @@
     if (!has && !e) {
       e = document.createElement('div');
       e.className = 'empty';
-      e.textContent = 'ماكو رسائل بعد. الرسائل تنمسح تلقائياً كل يوم.';
+      e.textContent = 'ماكو رسائل بعد.';
       $('msgs').appendChild(e);
     } else if (has && e) e.remove();
   }
@@ -358,10 +361,49 @@
     const day = dayKey(m.ts);
     if (day === lastDay) return null;
     lastDay = day;
+    return makeDayChip(m);
+  }
+  function makeDayChip(m) {
+    const day = dayKey(m.ts);
     const d = document.createElement('div');
     d.className = 'day';
+    d.dataset.day = day;
     d.innerHTML = `<span>${day === dayKey(Date.now()) ? 'اليوم' : fmtDay.format(m.ts)}</span>`;
     return d;
+  }
+
+  // ---------------------------------------------------------------- older history
+  // History is kept now, so scrolling to the top loads earlier messages 100 at a time.
+  let loadingOlder = false;
+  let noMoreOlder = false;
+  async function loadOlder() {
+    if (loadingOlder || noMoreOlder || !state.msgs.size) return;
+    loadingOlder = true;
+    try {
+      const oldest = Math.min(...state.msgs.keys());
+      const data = await api(`/api/messages?before=${oldest}`);
+      const evs = data.events.filter((m) => !state.msgs.has(m.seq));
+      if (!data.more) noMoreOlder = true;
+      if (!evs.length) return;
+      const frag = document.createDocumentFragment();
+      let day = null;
+      for (const m of evs) {
+        state.msgs.set(m.seq, m);
+        if (dayKey(m.ts) !== day) { day = dayKey(m.ts); frag.appendChild(makeDayChip(m)); }
+        frag.appendChild(renderRow(m));
+      }
+      const msgs = $('msgs');
+      const first = msgs.firstElementChild;
+      if (first && first.classList.contains('day') && first.dataset.day === day) first.remove();
+      const prevHeight = list.scrollHeight;
+      msgs.insertBefore(frag, msgs.firstChild);
+      list.scrollTop += list.scrollHeight - prevHeight; // keep the view where it was
+      restyleGroups();
+    } catch {
+      // try again on the next scroll
+    } finally {
+      loadingOlder = false;
+    }
   }
   function appendRow(m, animate) {
     const d = dayChip(m);
@@ -745,6 +787,8 @@
     if (extra.dur) params.set('dur', String(extra.dur));
     if (extra.name) params.set('name', extra.name);
     if (reply && reply.seq) params.set('replyTo', String(reply.seq));
+    const retry = () => uploadFile(kind, blob, extra, reply);
+    if (blob.size > MAX_UPLOAD) { uploadChunked(blob, params, cid, prog, retry); return; }
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `/api/upload?${params}`);
     xhr.setRequestHeader('Content-Type', blob.type || 'application/octet-stream');
@@ -757,11 +801,63 @@
         if (prog) prog.remove();
         let err = { status: xhr.status, message: `HTTP ${xhr.status}` };
         try { err.message = JSON.parse(xhr.responseText).error || err.message; } catch {}
-        failPending(cid, () => uploadFile(kind, blob, extra), err);
+        failPending(cid, retry, err);
       }
     };
-    xhr.onerror = () => { if (prog) prog.remove(); failPending(cid, () => uploadFile(kind, blob, extra), { status: 0 }); };
+    xhr.onerror = () => { if (prog) prog.remove(); failPending(cid, retry, { status: 0 }); };
     xhr.send(blob);
+  }
+
+  // Sends one part; resolves when stored, reports bytes as they go.
+  function sendPart(url, body, onBytes) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', url);
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      xhr.upload.onprogress = (e) => onBytes(e.loaded);
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) return resolve(xhr.responseText);
+        const err = new Error(`HTTP ${xhr.status}`);
+        err.status = xhr.status;
+        try { err.message = JSON.parse(xhr.responseText).error || err.message; } catch {}
+        reject(err);
+      };
+      xhr.onerror = () => { const e = new Error('network'); e.status = 0; reject(e); };
+      xhr.send(body);
+    });
+  }
+
+  // Files over one request's limit: upload in parts (3 at a time, each retried once), then join.
+  async function uploadChunked(blob, params, cid, prog, retry) {
+    const id = uid().replace(/[^a-z0-9]/g, '').slice(0, 24).padEnd(8, '0');
+    const parts = Math.ceil(blob.size / CHUNK);
+    const sent = new Array(parts).fill(0);
+    const show = () => { if (prog) prog.textContent = `${Math.min(99, Math.round((sent.reduce((a, b) => a + b, 0) / blob.size) * 100))}%`; };
+    try {
+      let next = 0;
+      const worker = async () => {
+        while (next < parts) {
+          const i = next++;
+          const body = blob.slice(i * CHUNK, Math.min(blob.size, (i + 1) * CHUNK));
+          const url = `/api/upload?up=${id}&part=${i}`;
+          const onBytes = (n) => { sent[i] = n; show(); };
+          try { await sendPart(url, body, onBytes); } catch (e) { if (e.status === 401) throw e; await sendPart(url, body, onBytes); }
+          sent[i] = body.size;
+          show();
+        }
+      };
+      await Promise.all([worker(), worker(), worker()]);
+      if (prog) prog.textContent = '…';
+      const final = new URLSearchParams(params);
+      final.set('up', id);
+      final.set('final', '1');
+      final.set('parts', String(parts));
+      final.set('mime', blob.type || 'application/octet-stream');
+      settle(cid, await api(`/api/upload?${final}`, { method: 'POST' }));
+    } catch (e) {
+      if (prog) prog.remove();
+      failPending(cid, retry, e);
+    }
   }
 
   async function compressImage(file) {
@@ -784,14 +880,14 @@
   async function handleFiles(files, asDocuments = false) {
     for (const f of files) {
       if (asDocuments || !/^(image|video)\//.test(f.type)) {
-        if (f.size > MAX_UPLOAD) { toast(`${f.name}: الملف أكبر من 4 ميگا — الحد الأقصى للرفع 4 ميگا`, 4000); continue; }
+        if (f.size > MAX_FILE) { toast(`${f.name}: الملف أكبر من 20 ميگا — هذا أقصى حجم يسمح بيه التيليجرام`, 5000); continue; }
         uploadFile('file', f, { name: f.name, size: f.size });
       } else if (f.type.startsWith('image/')) {
         const { blob, w, h } = await compressImage(f);
         if (blob.size > MAX_UPLOAD) { toast('الصورة كبيرة هواية'); continue; }
         uploadFile('photo', blob, { w, h });
       } else if (f.type.startsWith('video/')) {
-        if (f.size > MAX_UPLOAD) { toast('الفيديو أكبر من 4 ميگا — الحد الأقصى للرفع 4 ميگا'); continue; }
+        if (f.size > MAX_FILE) { toast('الفيديو أكبر من 20 ميگا — هذا أقصى حجم يسمح بيه التيليجرام', 5000); continue; }
         uploadFile('video', f);
       }
     }
@@ -822,7 +918,7 @@
       if (rec.cancelled || dur < 0.7) return;
       const type = (rec.mr.mimeType || mime || 'audio/webm').split(';')[0];
       const blob = new Blob(rec.chunks, { type });
-      if (blob.size > MAX_UPLOAD) { toast('التسجيل طويل هواية'); return; }
+      if (blob.size > MAX_FILE) { toast('التسجيل طويل هواية'); return; }
       uploadFile('voice', blob, { dur: Math.round(dur) });
     };
     rec.mr.start(250);
@@ -945,7 +1041,10 @@
     });
     $('toBottom').classList.add('hidden');
   }
-  list.addEventListener('scroll', () => { if (isNearBottom()) $('toBottom').classList.add('hidden'); }, { passive: true });
+  list.addEventListener('scroll', () => {
+    if (isNearBottom()) $('toBottom').classList.add('hidden');
+    if (list.scrollTop < 300) loadOlder();
+  }, { passive: true });
   $('toBottom').addEventListener('click', () => scrollToBottom());
   if (window.visualViewport) window.visualViewport.addEventListener('resize', () => { if (isNearBottom()) scrollToBottom(true); });
 

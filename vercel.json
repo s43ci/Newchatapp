@@ -1,10 +1,4 @@
 {
-  "crons": [
-    {
-      "path": "/api/cron",
-      "schedule": "0 0 * * *"
-    }
-  ],
   "headers": [
     {
       "source": "/(.*)",
@@ -38,5 +32,10 @@
       "source": "/api/:route",
       "destination": "/api/main?r=:route"
     }
-  ]
+  ],
+  "functions": {
+    "api/main.js": {
+      "maxDuration": 60
+    }
+  }
 }

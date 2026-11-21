@@ -1,14 +1,55 @@
-// POST /api/upload?kind=photo|video|voice&name=...  raw body = file bytes
-import { handler, requireSession, HttpError, tgMultipart, ensureGroup, fromTelegram, addEvent, notifyOthers, readBody, findMessage, replySnapshot, replyParams } from './_lib.js';
+// POST /api/upload?kind=photo|video|voice|file&name=...  raw body = file bytes.
+// Files over Vercel's 4.5 MB request limit come in parts:
+//   POST ?up=<id>&part=<n>  (body = part)  … then  POST ?up=<id>&final=1&parts=<N>&mime=…&kind=…
+import { handler, requireSession, HttpError, tgMultipart, ensureGroup, fromTelegram, addEvent, notifyOthers, readBody, findMessage, replySnapshot, replyParams, redis, pipeline } from './_lib.js';
+
+// Telegram bots can only download files up to 20 MB, so larger ones could never be opened.
+export const MAX_FILE = 20 * 1024 * 1024;
+const MAX_PARTS = 40;
+
+// Stores one part, or joins all parts on the final call. Returns null for a stored part.
+async function chunked(req, role) {
+  const id = String(req.query.up);
+  if (!/^[a-z0-9]{8,40}$/.test(id)) throw new HttpError(400, 'upload id');
+  const key = (n) => `up:${role}:${id}:${n}`;
+  if (req.query.final !== '1') {
+    const part = parseInt(req.query.part, 10);
+    if (!(part >= 0 && part < MAX_PARTS)) throw new HttpError(400, 'part');
+    const chunk = await readBody(req);
+    await redis('SET', key(part), chunk.toString('base64'), 'EX', 900);
+    return null;
+  }
+  const parts = parseInt(req.query.parts, 10);
+  if (!(parts > 0 && parts <= MAX_PARTS)) throw new HttpError(400, 'parts');
+  const bufs = [];
+  let total = 0;
+  for (let i = 0; i < parts; i++) {
+    const b64 = await redis('GET', key(i));
+    if (!b64) throw new HttpError(400, 'missing part');
+    const b = Buffer.from(b64, 'base64');
+    total += b.length;
+    if (total > MAX_FILE) throw new HttpError(413, 'too large');
+    bufs.push(b);
+  }
+  await pipeline(Array.from({ length: parts }, (_, i) => ['DEL', key(i)]));
+  return Buffer.concat(bufs);
+}
 
 export default handler(async (req, res) => {
   if (req.method !== 'POST') throw new HttpError(405, 'method');
   const s = requireSession(req);
+  let buf, mime;
+  if (req.query.up) {
+    buf = await chunked(req, s.role);
+    if (!buf) return res.json({ ok: true }); // part stored; wait for the rest
+    mime = String(req.query.mime || 'application/octet-stream');
+  } else {
+    mime = String(req.headers['content-type'] || 'application/octet-stream');
+    buf = await readBody(req);
+  }
+  if (!buf.length) throw new HttpError(400, 'empty');
   const group = await ensureGroup(req);
   const kind = String(req.query.kind || '');
-  const mime = String(req.headers['content-type'] || 'application/octet-stream');
-  const buf = await readBody(req);
-  if (!buf.length) throw new HttpError(400, 'empty');
 
   const ext = (mime.split('/')[1] || 'bin').split(';')[0].replace('x-', '').replace('quicktime', 'mov').replace('jpeg', 'jpg');
   const form = new FormData();

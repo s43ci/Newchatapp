@@ -5,6 +5,18 @@ export default handler(async (req, res) => {
   const s = requireSession(req);
   const after = Math.max(0, parseInt(req.query.after, 10) || 0);
   const other = Object.keys(ROLES).find((r) => r !== s.role);
+
+  // Older history, 100 messages at a time (scrolling up).
+  if (req.query.before) {
+    const before = parseInt(req.query.before, 10) || 0;
+    const [items, hide] = await pipeline([
+      ['ZREVRANGEBYSCORE', 'events', `(${before}`, '-inf', 'LIMIT', '0', '100'],
+      ['GET', `hide:${s.role}`],
+    ]);
+    const hidden = parseInt(hide, 10) || 0;
+    const events = (items || []).map((x) => JSON.parse(x)).filter((e) => e.type === 'msg' && e.seq > hidden).reverse();
+    return res.json({ events, more: (items || []).length === 100 });
+  }
   const range = after > 0
     ? ['ZRANGEBYSCORE', 'events', `(${after}`, '+inf', 'LIMIT', '0', '500']
     : ['ZRANGE', 'events', '-500', '-1'];
